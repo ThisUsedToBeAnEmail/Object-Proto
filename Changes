@@ -1,0 +1,106 @@
+Revision history for Object-Proto
+
+0.23	2026-09-23
+	- Fix build on perl below 5.20: XopENTRYCUSTOM is not there
+	- Fix build with MSVC: PERL_CALLCONV is dllimport outside the perl DLL
+	- Fix the pre-5.14 custom op name fallback: key on the ppaddr as an IV
+
+0.22	2026-09-09
+	- Accept a registered simple custom op as a function-style accessor operand
+	- Add register_simple_custom_op
+
+0.21	2026-08-29
+	- Fix the POD examples: remove trailing closing paren
+
+0.19	2026-08-02
+	- Add a :private attribute modifier. 
+
+0.18	2026-07-04
+	- Fix bug with named constructor
+
+0.17    2026-06-22
+	- Fix/remove PAX headers
+	- Fix pod
+
+0.16	2026-04-15
+	- Fix OP_CUSTOM assertion failures on debugging Perls 5.14-5.20 
+	- Fix Perl_custom_op_register macro compatibility on Perl 5.10.x 
+	- Fix duplicate cv_set_call_checker definition on older Perls
+
+0.15	2026-04-14
+	- Use DynaLoader with RTLD_GLOBAL (dl_load_flags 0x01) so downstream XS
+	  modules can resolve Object::Proto symbols at runtime without explicit linking
+
+0.14	2026-04-14
+	- Use ExtUtils::Depends for cross-module XS header and library management
+	- Remove include_dir() in favour of ExtUtils::Depends Install/Files.pm
+
+0.13	2026-04-14
+	- Add object_register_type_xs_ex() user-data API, include_dir() and installable headers for downstream XS modules
+
+0.12	2026-04-12
+	- Fix func accessors (import_accessor) bypassing lazy attribute evaluation,
+	  returning undef instead of triggering the builder
+	- Fix Perl_xs_boot_epilog compilation failure on older perls (5.16, 5.20)
+	  where C preprocessor argument counting conflicts with aTHX_ expansion
+	- Fix Solaris linker failure: remove --export-dynamic flag which is
+	  unsupported by the Solaris native ld
+
+0.11	2026-04-08
+	- Add optional $prefix parameter to import_accessors($class, $prefix, $target)
+	  to prepend a string to all imported accessor names (avoids collisions)
+	- Fix compilation on Cygwin: replace static XS() with XS_INTERNAL()
+	  to avoid conflict with dllexport requiring external linkage
+
+0.10	2026-04-07
+	- Fix import_accessors/import_accessor to override existing OO accessors
+	  from a different class defined in the same package (collision bug)
+
+0.09	2026-04-05
+	- Fix linker failure on Perl 5.36+ where Perl_mro_isa_changed_in is no
+	  longer an exported symbol.
+	- Set MIN_PERL_VERSION to 5.10
+
+0.08	2026-04-05
+	- Fix Object::Proto::clone so it deep clones objects instead of shallow copying
+	- Extend clone to support any reference being passed
+
+0.07	2026-04-05
+	- Add +attr syntax for modifying inherited attributes (Moo/Moose-style)
+	- Fix xop_class registration for custom ops (fixes assertion failures on
+	  Perl DEBUGGING builds)
+
+0.06	2026-04-04
+	- Fix role slots with builders so consuming classes can provide the builder
+
+0.05	2026-04-03
+	- Export role(), requires(), and with() into caller's namespace on import
+	- Add t/050-exported-keywords.t for new export coverage
+
+0.04	2026-04-03
+	- Add BUILD callback hook when instantiating 'new' objects
+	- Add trigger callbacks for slots via :trigger(method_name)
+	- Add custom predicate/clearer names via :predicate(name) and :clearer(name)
+	- Add reader/writer for Java-style accessors via :reader(name) and :writer(name)
+	- Add weak references via :weak modifier (auto-weaken references)
+	- Add init_arg via :arg(name) for alternate constructor argument names
+	- Builders now run at construction by default (eager); use :lazy for deferred
+	- Fix role slots with defaults not being applied
+	- Fix required attributes now reject setting to undef via setters
+	- Update POD
+
+0.03	2026-04-02
+	- Adds multiple inheritance via extends
+	- Adds parent and ancestors meta functions
+
+0.02	2026-04-01
+	- Optimise hot paths new/get/set
+	- Add benchmark to POD
+	- Remove cross Ancient tests
+	- Improve test coverage with valid tests
+
+0.01    2026-04-01
+        First release - split from Ancient distribution.
+        Objects with prototype chains.
+        Type constraints and modifiers.
+        XS-level type registration API.
