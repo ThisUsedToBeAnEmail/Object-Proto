@@ -640,6 +640,12 @@ static MAGIC* get_object_magic(pTHX_ SV *obj) {
     return NULL;
 }
 
+/* A slot holding the shared undef is empty: before perl 5.20 av_fill put
+   &PL_sv_undef in new slots rather than NULL, and it is read-only. */
+static int slot_is_writable(SV *slot) {
+    return slot && slot != &PL_sv_undef; /* # uncoverable condition right count:2 */
+}
+
 /* Add object magic */
 static MAGIC* add_object_magic(pTHX_ SV *obj) {
     MAGIC *mg;
@@ -937,7 +943,7 @@ static OP* pp_object_set(pTHX) {
     /* In-place update if slot already has an SV (avoids alloc/dealloc) */
     if (idx <= AvFILLp(av)) {
         SV *slot = AvARRAY(av)[idx];
-        if (slot) {
+        if (slot_is_writable(slot)) {
             sv_setsv(slot, val);
             SETs(val);
             RETURN;
@@ -1047,7 +1053,7 @@ static OP* pp_object_set_typed(pTHX) {
         /* In-place update avoids newSVsv allocation (common case) */
         if (idx <= AvFILLp(av)) {
             SV *slot = AvARRAY(av)[idx];
-            if (slot) {
+            if (slot_is_writable(slot)) {
                 sv_setsv(slot, val);
                 SETs(val);
                 RETURN;
@@ -1390,7 +1396,7 @@ XS_INTERNAL(xs_accessor_fallback) {
         /* In-place update if slot already has an SV */
         if (idx <= AvFILLp(av)) {
             SV *slot = AvARRAY(av)[idx];
-            if (slot) {
+            if (slot_is_writable(slot)) {
                 sv_setsv(slot, ST(1));
                 ST(0) = ST(1);
                 XSRETURN(1);
@@ -1551,7 +1557,7 @@ static OP* pp_object_func_set(pTHX) {
     /* In-place update if slot already has an SV (avoids alloc/dealloc) */
     if (idx <= AvFILLp(av)) {
         SV *slot = AvARRAY(av)[idx];
-        if (slot) {
+        if (slot_is_writable(slot)) {
             sv_setsv(slot, val);
             SETs(val);
             RETURN;
@@ -1620,7 +1626,7 @@ OBJECT_INLINE bool is_simple_op(pTHX_ OP *op) {
 static OP* func_accessor_call_checker(pTHX_ OP *entersubop, GV *namegv, SV *ckobj) {
     IV registry_id = SvIV(ckobj);
     FuncAccessorData *data = get_func_accessor_data(registry_id);
-    OP *pushop, *cvop, *objop, *argop, *valop;
+    OP *pushop, *cvop, *objop, *argop;
     OP *newop;
 
     PERL_UNUSED_ARG(namegv);
@@ -1726,7 +1732,7 @@ XS_INTERNAL(xs_func_accessor_fallback) {
         /* In-place update if slot already has an SV */
         if (idx <= AvFILLp(av)) {
             SV *slot = AvARRAY(av)[idx];
-            if (slot) {
+            if (slot_is_writable(slot)) {
                 sv_setsv(slot, ST(1));
                 ST(0) = ST(1);
                 XSRETURN(1);
@@ -1838,7 +1844,6 @@ XS_INTERNAL(xs_import_accessors) {
     const char *class_pv, *pkg_pv, *prefix_pv;
     ClassMeta *meta;
     IV i;
-    int is_same_class;
 
     if (items < 1) croak("Usage: Object::Proto::import_accessors($class [, $prefix [, $package]])");
 
@@ -1864,9 +1869,6 @@ XS_INTERNAL(xs_import_accessors) {
     if (!meta) {
         croak("Class '%s' not defined with Object::Proto::define", class_pv);
     }
-
-    /* Check if importing into same class (skip validation for performance) */
-    is_same_class = (class_len == pkg_len && strEQ(class_pv, pkg_pv));
 
     /* Install function-style accessors for each property */
     for (i = 1; i < meta->slot_count; i++) {
@@ -1904,7 +1906,6 @@ XS_INTERNAL(xs_import_accessor) {
     ClassMeta *meta;
     SV **idx_svp;
     IV idx;
-    int is_same_class;
 
     if (items < 2) croak("Usage: Object::Proto::import_accessor($class, $prop [, $alias [, $package]])");
 
@@ -1937,9 +1938,6 @@ XS_INTERNAL(xs_import_accessor) {
         croak("Property '%s' not defined in class '%s'", prop_pv, class_pv);
     }
     idx = SvIV(*idx_svp);
-
-    /* Check if importing into same class (skip validation for performance) */
-    is_same_class = (class_len == pkg_len && strEQ(class_pv, pkg_pv));
 
     /* Install with alias name — no class check, work with any compatible object */
     install_func_accessor(aTHX_ pkg_pv, alias_pv, idx,
@@ -2088,10 +2086,15 @@ static void install_accessor(pTHX_ const char *class_name, const char *prop_name
  * the caller's cop, so its stash names the calling package. */
 static void object_check_private(pTHX_ SlotSpec *spec, ClassMeta *meta) {
     HV *stash;
+    const char *name;
     const char *caller;
     if (!spec->is_private) return;
     stash  = PL_curcop ? CopSTASH(PL_curcop) : NULL; /* # uncoverable condition right count:1 */
-    caller = (stash && HvNAME(stash)) ? HvNAME(stash) : "";
+    /*
+     # uncoverable condition right count:1
+     # uncoverable condition left count:2 */
+    name   = stash ? HvNAME(stash) : NULL;
+    caller = name ? name : ""; /* # uncoverable condition right count:1 */
     if (strEQ(caller, meta->class_name)) return;
     croak("cannot call private attribute %s on %s from %s",
           spec->name, meta->class_name, caller);
@@ -2389,7 +2392,7 @@ XS_INTERNAL(xs_reader_fallback) {
                         }
                     }
                     
-                    if (slot) {
+                    if (slot_is_writable(slot)) {
                         sv_setsv(slot, built_val);
                     }
                     else {
@@ -2489,7 +2492,7 @@ XS_INTERNAL(xs_writer_fallback) {
         /* In-place update */
         if (idx <= AvFILLp(av)) {
             SV *slot = AvARRAY(av)[idx];
-            if (slot) {
+            if (slot_is_writable(slot)) {
                 sv_setsv(slot, val);
                 /* Weaken reference if is_weak flag is set */
                 if (spec && spec->is_weak && SvROK(slot)) { /* # uncoverable condition right count:1 */
@@ -3167,7 +3170,6 @@ XS_INTERNAL(xs_define) {
     /* Multiple inheritance support */
     ClassMeta **parent_metas = NULL;
     IV parent_count = 0;
-    IV parent_alloc = 0;
     
     if (items < 1) croak("Usage: Object::Proto::define($class, @properties)");
     
@@ -3185,7 +3187,6 @@ XS_INTERNAL(xs_define) {
                 IV plen = av_len(parents_av) + 1;
                 IV p;
                 Newx(parent_metas, plen, ClassMeta*);
-                parent_alloc = plen;
                 for (p = 0; p < plen; p++) {
                     SV **elem = av_fetch(parents_av, p, 0);
                     if (elem && SvPOK(*elem)) { /* # uncoverable condition right count:1 */
@@ -3208,7 +3209,6 @@ XS_INTERNAL(xs_define) {
                     croak("Object::Proto::define: parent class '%s' has not been defined", parent_pv);
                 }
                 Newx(parent_metas, 1, ClassMeta*);
-                parent_alloc = 1;
                 parent_metas[parent_count++] = pmeta;
             }
             /* Shift remaining args down to remove extends => value */

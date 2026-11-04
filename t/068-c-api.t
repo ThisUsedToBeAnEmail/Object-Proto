@@ -8,8 +8,8 @@ use File::Path ();
 use Object::Proto;
 
 BEGIN {
-    eval { require ExtUtils::CBuilder; require ExtUtils::ParseXS; 1 }
-        or plan skip_all => 'ExtUtils::CBuilder and ExtUtils::ParseXS build the test module';
+    eval { require ExtUtils::CBuilder; require ExtUtils::ParseXS; require ExtUtils::Depends; 1 }
+        or plan skip_all => 'ExtUtils::CBuilder, ExtUtils::ParseXS and ExtUtils::Depends build the test module';
     ExtUtils::CBuilder->new(quiet => 1)->have_compiler
         or plan skip_all => 'a C compiler builds the test module';
 }
@@ -62,10 +62,14 @@ close $fh;
 
 ExtUtils::ParseXS::process_file(filename => $xs, output => $c, prototypes => 0);
 my $builder = ExtUtils::CBuilder->new(quiet => 1);
-my $obj = $builder->compile(source => $c, include_dirs => [File::Spec->rel2abs('include'), "$tmp"]);
+my %vars = ExtUtils::Depends->new('OPT::CApi', 'Object::Proto')->get_makefile_vars;
+my @inc = map { /^-I(.+)/ ? $1 : () } split ' ', $vars{INC};
+my @link = proto_library();
+diag("linking against @link") if @link;
+my $obj = $builder->compile(source => $c, include_dirs => [@inc, File::Spec->rel2abs('include'), "$tmp"]);
 my $dir = File::Spec->catdir($tmp, 'auto', 'OPT', 'CApi');
 File::Path::make_path($dir);
-my $lib = $builder->link(objects => [$obj], module_name => 'OPT::CApi', lib_file => File::Spec->catfile($dir, "CApi.$Config{dlext}"));
+my $lib = $builder->link(objects => [$obj, @link], module_name => 'OPT::CApi', lib_file => File::Spec->catfile($dir, "CApi.$Config{dlext}"));
 ok(-f $lib, 'the test module built');
 
 {
@@ -107,5 +111,20 @@ my $p = OPT::User->new(2, 5, 'x', 1, 7);
 is($p->w, 10, 'positional construction coerces through C');
 eval { OPT::User->new(3) };
 like($@, qr/Type constraint failed for 'e' in new\(\): expected Even/, 'and checks through C');
+
+
+sub proto_library {
+    my %exts = (MSWin32 => [$Config{_a}, '.lib', ".$Config{dlext}"], cygwin => ['.dll'], android => [".$Config{dlext}"]);
+    my $exts = $exts{$^O} or return;
+    my @parts = ('auto', 'Object', 'Proto');
+    my $stem = defined &DynaLoader::mod2fname ? DynaLoader::mod2fname(\@parts) : 'Proto';
+    for my $dir (grep { -d $_ } @INC) {
+        for my $ext (@$exts) {
+            my $file = File::Spec->catfile($dir, @parts, "$stem$ext");
+            return $file if -f $file;
+        }
+    }
+    return;
+}
 
 done_testing;
