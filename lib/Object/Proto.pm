@@ -1,7 +1,7 @@
 package Object::Proto;
 use strict;
 use warnings;
-our $VERSION = '1.04';
+our $VERSION = '1.05';
 
 use DynaLoader;
 our @ISA = ('DynaLoader');
@@ -118,6 +118,34 @@ The following types are available with inline checks (zero overhead):
 =item * B<CodeRef> - code reference
 
 =item * B<Object> - blessed reference
+
+=item * B<Ref> - any reference, blessed or not
+
+=item * B<ScalarRef> - reference to a plain scalar or to another reference
+(what C<ref> calls C<SCALAR> or C<REF>), blessed or not
+
+=item * B<RegexpRef> - a C<qr//> regular expression, whatever class it is
+blessed into
+
+=item * B<GlobRef> - reference to a glob, blessed or not
+
+=item * B<FileHandle> - an open filehandle (a glob, glob reference or IO
+reference that is open or tied), or an object that isa C<IO::Handle>. A
+handle that is not open is checked with C<isa>, which costs a method
+resolution lookup.
+
+=item * B<ClassName> - the name of a loaded package: one with a defined
+C<$VERSION>, a non-empty C<@ISA> or at least one sub. The package is looked
+up, never created. This costs a symbol table lookup, and a scan of the
+package for a sub when it has neither C<$VERSION> nor C<@ISA>.
+
+=item * B<PositiveInt> - an B<Int> greater than zero
+
+=item * B<NegativeInt> - an B<Int> less than zero
+
+=item * B<NonEmptyStr> - a B<Str> whose length is greater than zero
+
+=item * B<Undef> - an undefined value
 
 =back
 
@@ -389,6 +417,12 @@ Register a custom type for use in slot specifications.
 	object 'Counter',
 	    'value:PositiveInt',
 	    'label:TrimmedStr';
+
+A registered type takes precedence over a built-in type of the same name,
+so a type you register keeps its meaning if a later release of
+Object::Proto adds a built-in with that name. Type names are resolved when
+a class is defined: a class defined before the registration keeps the
+built-in. This applies equally to types registered from C (see below).
 
 =head2 Object::Proto::has_type($name)
 

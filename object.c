@@ -20,6 +20,16 @@ typedef enum {
     TYPE_HASHREF,
     TYPE_CODEREF,
     TYPE_OBJECT,
+    TYPE_REF,
+    TYPE_SCALARREF,
+    TYPE_REGEXPREF,
+    TYPE_GLOBREF,
+    TYPE_FILEHANDLE,
+    TYPE_CLASSNAME,
+    TYPE_POSITIVEINT,
+    TYPE_NEGATIVEINT,
+    TYPE_NONEMPTYSTR,
+    TYPE_UNDEF,
     TYPE_CUSTOM       /* Uses registered or callback check */
 } BuiltinTypeID;
 
@@ -176,18 +186,139 @@ OBJECT_INLINE BuiltinTypeID parse_builtin_type(const char *type_str, STRLEN len)
     if (len == 3 && strEQ(type_str, "Int")) return TYPE_INT;
     if (len == 3 && strEQ(type_str, "Num")) return TYPE_NUM;
     if (len == 3 && strEQ(type_str, "Any")) return TYPE_ANY;
+    if (len == 3 && strEQ(type_str, "Ref")) return TYPE_REF;
     if (len == 4 && strEQ(type_str, "Bool")) return TYPE_BOOL;
+    if (len == 5 && strEQ(type_str, "Undef")) return TYPE_UNDEF;
     if (len == 6 && strEQ(type_str, "Object")) return TYPE_OBJECT;
     if (len == 7 && strEQ(type_str, "Defined")) return TYPE_DEFINED;
     if (len == 7 && strEQ(type_str, "CodeRef")) return TYPE_CODEREF;
     if (len == 7 && strEQ(type_str, "HashRef")) return TYPE_HASHREF;
+    if (len == 7 && strEQ(type_str, "GlobRef")) return TYPE_GLOBREF;
     if (len == 8 && strEQ(type_str, "ArrayRef")) return TYPE_ARRAYREF;
+    if (len == 9 && strEQ(type_str, "ScalarRef")) return TYPE_SCALARREF;
+    if (len == 9 && strEQ(type_str, "RegexpRef")) return TYPE_REGEXPREF;
+    if (len == 9 && strEQ(type_str, "ClassName")) return TYPE_CLASSNAME;
+    if (len == 10 && strEQ(type_str, "FileHandle")) return TYPE_FILEHANDLE;
+    if (len == 11 && strEQ(type_str, "PositiveInt")) return TYPE_POSITIVEINT;
+    if (len == 11 && strEQ(type_str, "NegativeInt")) return TYPE_NEGATIVEINT;
+    if (len == 11 && strEQ(type_str, "NonEmptyStr")) return TYPE_NONEMPTYSTR;
     return TYPE_NONE;  /* Unknown - could be custom */
+}
+
+/* ScalarRef: a reference that ref() calls SCALAR or REF, blessed or not */
+static bool check_scalarref(pTHX_ SV *val) {
+    SV *rv;
+    if (!SvROK(val)) return false;
+    rv = SvRV(val);
+    if (SvTYPE(rv) <= SVt_PVMG) {
+#if !PERL_VERSION_GE(5,11,0)
+        if (SvRXOK(val)) return false;    /* before 5.11 a regexp is a PVMG */
+#endif
+        return !SvVOK(rv);                /* ref() calls a v-string VSTRING */
+    }
+    /* A tied element is an lvalue that ref() calls SCALAR, or REF once it
+     * has fetched a reference; substr, vec and pos lvalues are LVALUE. */
+    if (SvTYPE(rv) == SVt_PVLV) {
+        const char *kind = sv_reftype(rv, 0);
+        return strEQ(kind, "SCALAR") || strEQ(kind, "REF");
+    }
+    return false;
+}
+
+/* FileHandle: an open handle - a glob (including one held in an lvalue),
+ * glob ref or IO ref whose IO is open or tied, as Scalar::Util::openhandle
+ * decides it - or an object that isa IO::Handle, which covers handle objects
+ * that are not open yet. */
+static bool check_filehandle(pTHX_ SV *val) {
+    SV *sv = SvROK(val) ? SvRV(val) : val;
+    IO *io = NULL;
+
+    /* isGV_with_GP is flag && (PVGV || PVLV). The GP flag is only set on a
+     * PVGV or a PVLV, so PVGV false only ever falls to PVLV true, and PVLV
+     * is never false: neither decides the result with its false outcome.
+     # uncoverable condition right count:2
+     # uncoverable condition right count:3 */
+    if (isGV_with_GP(sv))
+        io = GvIOp((GV *)sv);
+    else if (SvTYPE(sv) == SVt_PVIO)
+        io = (IO *)sv;
+
+    /* A tied handle has no PerlIO of its own */
+    if (io && (IoIFP(io) || mg_find((SV *)io, PERL_MAGIC_tiedscalar)))
+        return true;
+
+    return SvROK(val) && SvOBJECT(SvRV(val)) && sv_derived_from(val, "IO::Handle");
+}
+
+/* Int, and the sign of its value: -1, 0 or 1, or INT_SIGN_NONE when val
+ * is not an Int. A UV is only flagged when it is above IV_MAX, where SvIV
+ * would wrap it negative. A numeric string is signed by strtoll, which on a
+ * 32-bit perl reads past the IV range. */
+#define INT_SIGN_NONE 2
+OBJECT_INLINE int int_sign(pTHX_ SV *val) {
+    if (SvIOK(val)) {
+        if (SvIsUV(val)) return 1;
+        return SvIVX(val) > 0 ? 1 : SvIVX(val) < 0 ? -1 : 0;
+    }
+    if (SvPOK(val)) {
+        /* Use strtoll for fast integer parsing */
+        STRLEN len;
+        const char *pv = SvPV(val, len);
+        char *endp;
+        long long n;
+        if (len == 0) return INT_SIGN_NONE;
+        errno = 0;
+        n = strtoll(pv, &endp, 10);
+        if (errno == 0 && endp == pv + len && *pv != '\0') /* # uncoverable condition right count:3 */
+            return n > 0 ? 1 : n < 0 ? -1 : 0;
+    }
+    return INT_SIGN_NONE;
+}
+
+/* The GV a stash holds under name, or NULL. An entry that is not a GV is a
+ * constant or a sub stub placeholder. */
+static GV *stash_gv(pTHX_ HV *stash, const char *name, I32 len) {
+    SV **svp = hv_fetch(stash, name, len, 0);
+    return svp && SvTYPE(*svp) == SVt_PVGV ? (GV *)*svp : NULL;
+}
+
+/* ClassName: a non-empty string naming a loaded package - one with a
+ * defined $VERSION, a non-empty @ISA or at least one sub, as Class::Load
+ * decides it. The stash is looked up, never created, and walked bucket by
+ * bucket so the check does not reset an each() the caller has under way. */
+static bool check_classname(pTHX_ SV *val) {
+    HV *stash;
+    GV *gv;
+    HE **buckets;
+    STRLEN i;
+
+    if (!SvOK(val) || SvROK(val)) return false;
+    if (SvPOK(val) && SvCUR(val) == 0) return false;   /* "" would be main */
+    stash = gv_stashsv(val, 0);
+    if (!stash) return false;
+
+    gv = stash_gv(aTHX_ stash, "VERSION", 7);
+    if (gv && GvSV(gv) && SvOK(GvSV(gv))) return true;
+    gv = stash_gv(aTHX_ stash, "ISA", 3);
+    if (gv && GvAV(gv) && AvFILLp(GvAV(gv)) >= 0) return true;
+
+    buckets = HvARRAY(stash);
+    if (buckets) {
+        for (i = 0; i <= HvMAX(stash); i++) {
+            HE *he;
+            for (he = buckets[i]; he; he = HeNEXT(he)) {
+                SV *entry = HeVAL(he);
+                if (SvTYPE(entry) != SVt_PVGV || GvCV((GV *)entry))
+                    return true;
+            }
+        }
+    }
+    return false;
 }
 
 /* Inline type check - returns true if value passes check */
 OBJECT_INLINE bool check_builtin_type(pTHX_ SV *val, BuiltinTypeID type_id) {
-    switch (type_id) { /* # uncoverable branch true count:11 */
+    switch (type_id) { /* # uncoverable branch true count:21 */
         case TYPE_ANY:
             return true;
         case TYPE_DEFINED:
@@ -200,18 +331,7 @@ OBJECT_INLINE bool check_builtin_type(pTHX_ SV *val, BuiltinTypeID type_id) {
         case TYPE_STR:
             return SvOK(val) && !SvROK(val);  /* defined non-ref */
         case TYPE_INT:
-            if (SvIOK(val)) return true;
-            if (SvPOK(val)) {
-                /* Use strtoll for fast integer parsing */
-                STRLEN len;
-                const char *pv = SvPV(val, len);
-                char *endp;
-                if (len == 0) return false;
-                errno = 0;
-                (void)strtoll(pv, &endp, 10);
-                return errno == 0 && endp == pv + len && *pv != '\0'; /* # uncoverable condition right count:3 */
-            }
-            return false;
+            return int_sign(aTHX_ val) != INT_SIGN_NONE;
         case TYPE_NUM:
             if (SvNIOK(val)) return true;
             if (SvPOK(val)) {
@@ -240,6 +360,36 @@ OBJECT_INLINE bool check_builtin_type(pTHX_ SV *val, BuiltinTypeID type_id) {
             return SvROK(val) && SvTYPE(SvRV(val)) == SVt_PVCV;
         case TYPE_OBJECT:
             return SvROK(val) && sv_isobject(val);
+        case TYPE_REF:
+            return SvROK(val);
+        case TYPE_SCALARREF:
+            return check_scalarref(aTHX_ val);
+        case TYPE_REGEXPREF:
+#if PERL_VERSION_GE(5,11,0)
+            return SvROK(val) && SvTYPE(SvRV(val)) == SVt_REGEXP;
+#else
+            return SvROK(val) && SvRXOK(val);    /* a regexp is a PVMG before 5.11 */
+#endif
+        case TYPE_GLOBREF:
+            /* What ref() calls GLOB. A ref to a glob held in an lvalue
+             * vivifies it into a real glob, so the referent is a PVGV.
+             # uncoverable condition right count:3
+             # uncoverable condition left count:4
+             # uncoverable condition right count:4 */
+            return SvROK(val) && isGV_with_GP(SvRV(val));
+        case TYPE_FILEHANDLE:
+            return check_filehandle(aTHX_ val);
+        case TYPE_CLASSNAME:
+            return check_classname(aTHX_ val);
+        case TYPE_POSITIVEINT:
+            return int_sign(aTHX_ val) == 1;
+        case TYPE_NEGATIVEINT:
+            return int_sign(aTHX_ val) == -1;
+        case TYPE_NONEMPTYSTR:
+            /* a number always stringifies to something: only a string is empty */
+            return SvOK(val) && !SvROK(val) && (!SvPOK(val) || SvCUR(val) > 0);
+        case TYPE_UNDEF:
+            return !SvOK(val);
         default: /* # uncoverable statement */
             return true;  /* No check or unknown */ /* # uncoverable statement */
     }
@@ -248,8 +398,8 @@ OBJECT_INLINE bool check_builtin_type(pTHX_ SV *val, BuiltinTypeID type_id) {
 /* Get type name for error messages */
 static const char* type_id_to_name(BuiltinTypeID type_id) {
     /*
-     # uncoverable branch true count:11
-     # uncoverable branch true count:12 */
+     # uncoverable branch true count:21
+     # uncoverable branch true count:22 */
     switch (type_id) {
         case TYPE_ANY: return "Any";
         case TYPE_DEFINED: return "Defined";
@@ -261,6 +411,16 @@ static const char* type_id_to_name(BuiltinTypeID type_id) {
         case TYPE_HASHREF: return "HashRef";
         case TYPE_CODEREF: return "CodeRef";
         case TYPE_OBJECT: return "Object";
+        case TYPE_REF: return "Ref";
+        case TYPE_SCALARREF: return "ScalarRef";
+        case TYPE_REGEXPREF: return "RegexpRef";
+        case TYPE_GLOBREF: return "GlobRef";
+        case TYPE_FILEHANDLE: return "FileHandle";
+        case TYPE_CLASSNAME: return "ClassName";
+        case TYPE_POSITIVEINT: return "PositiveInt";
+        case TYPE_NEGATIVEINT: return "NegativeInt";
+        case TYPE_NONEMPTYSTR: return "NonEmptyStr";
+        case TYPE_UNDEF: return "Undef";
         case TYPE_CUSTOM: return "custom"; /* # uncoverable statement */
         default: return "unknown"; /* # uncoverable statement */
     }
@@ -571,30 +731,31 @@ static SlotSpec* parse_slot_spec(pTHX_ const char *spec_str, STRLEN len) {
                 spec->has_predicate = 1;
                 /* Default predicate name: has_<property> */
             } else {
-                /* Try as type name */
+                /* Try as type name. A registered type takes precedence over
+                 * a built-in of the same name, so a type a user registered
+                 * keeps its meaning when a built-in of that name is added. */
                 char *type_copy;
-                BuiltinTypeID type_id;
+                SV **svp = NULL;
 
                 Newx(type_copy, mod_len + 1, char);
                 Copy(mod_start, type_copy, mod_len, char);
                 type_copy[mod_len] = '\0';
 
-                type_id = parse_builtin_type(type_copy, mod_len);
-                if (type_id != TYPE_NONE) {
-                    spec->type_id = type_id;
+                /*
+                 # uncoverable branch false
+                 # uncoverable condition right count:1 */
+                if (g_type_registry) {
+                    svp = hv_fetch(g_type_registry, type_copy, mod_len, 0);
+                }
+                if (svp) {
+                    spec->registered = INT2PTR(RegisteredType*, SvIV(*svp));
+                    spec->type_id = TYPE_CUSTOM;
                     spec->has_type = 1;
                 } else {
-                    /* Check type registry for custom types */
-                    /*
-                     # uncoverable branch false
-                     # uncoverable condition right count:1 */
-                    if (g_type_registry) {
-                        SV **svp = hv_fetch(g_type_registry, type_copy, mod_len, 0);
-                        if (svp) {
-                            spec->registered = INT2PTR(RegisteredType*, SvIV(*svp));
-                            spec->type_id = TYPE_CUSTOM;
-                            spec->has_type = 1;
-                        }
+                    BuiltinTypeID type_id = parse_builtin_type(type_copy, mod_len);
+                    if (type_id != TYPE_NONE) {
+                        spec->type_id = type_id;
+                        spec->has_type = 1;
                     }
                 }
                 Safefree(type_copy);
@@ -4356,6 +4517,16 @@ XS_INTERNAL(xs_list_types) {
     av_push(result, newSVpvs("HashRef"));
     av_push(result, newSVpvs("CodeRef"));
     av_push(result, newSVpvs("Object"));
+    av_push(result, newSVpvs("Ref"));
+    av_push(result, newSVpvs("ScalarRef"));
+    av_push(result, newSVpvs("RegexpRef"));
+    av_push(result, newSVpvs("GlobRef"));
+    av_push(result, newSVpvs("FileHandle"));
+    av_push(result, newSVpvs("ClassName"));
+    av_push(result, newSVpvs("PositiveInt"));
+    av_push(result, newSVpvs("NegativeInt"));
+    av_push(result, newSVpvs("NonEmptyStr"));
+    av_push(result, newSVpvs("Undef"));
     
     /* Add registered types */
     /*
@@ -4365,6 +4536,11 @@ XS_INTERNAL(xs_list_types) {
         HE *he;
         hv_iterinit(g_type_registry);
         while ((he = hv_iternext(g_type_registry))) {
+            /* A registered type that shadows a built-in is listed once */
+            I32 key_len;
+            const char *key = hv_iterkey(he, &key_len);
+            if (parse_builtin_type(key, (STRLEN)key_len) != TYPE_NONE)
+                continue;
             av_push(result, newSVsv(hv_iterkeysv(he)));
         }
     }
