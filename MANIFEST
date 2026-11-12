@@ -5,6 +5,7 @@ META.yml			Module YAML meta-data (added by MakeMaker)
 Makefile.PL
 README
 bench/get_set.pl
+bench/handles.pl
 bench/new.pl
 bench/new_get_set.pl
 bench/object.pl
@@ -96,8 +97,17 @@ t/078-type-nonemptystr.t
 t/079-type-undef.t
 t/080-type-edges.t
 t/081-type-user-override.t
+t/082-handles-spec.t
+t/083-handles-object.t
+t/084-handles-role.t
+t/085-handles-inheritance.t
+t/086-handles-coderef.t
+t/087-handles-array.t
+t/088-handles-hash.t
+t/090-private-routes.t
 t/099-bugs.t
 t/fix_subtests.pl
+t/lib/Handles/Storage.pm
 t/lib/LoadedRole.pm
 t/lib/NeuralNet/Activation.pm
 t/lib/NeuralNet/Layer.pm
